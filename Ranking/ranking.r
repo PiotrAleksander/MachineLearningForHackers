@@ -1,6 +1,8 @@
 library(tm)
 library(ggplot2)
-data.path<-"./data/"
+library(lubridate)
+
+data.path<-"../SpamClassifier/data/"
 easyham.path<-paste(data.path, "easy_ham/", sep="") #dane ze SpamAssassins
 
 msg.full <- function(path) {
@@ -64,7 +66,6 @@ date.converter <- function(dates, pattern1, pattern2) {
   return(pattern1.convert)
 }
 
-library(lubridate)
 pattern1 <- "%a, %d %b %Y %H:%M:%S"
 pattern2 <- "%d %b %Y %H:%M:%S"
 allparse.df$Date <- date.converter(allparse.df$Date, pattern1, pattern2)
