@@ -1,5 +1,6 @@
 library(tm)
 library(ggplot2)
+library(plyr)
 library(lubridate)
 
 data.path<-"../SpamClassifier/data/"
@@ -74,3 +75,149 @@ allparse.df$Subject <- tolower(allparse.df$Subject)
 allparse.df$From.Email <- tolower(allparse.df$From.Email)
 priority.df <- allparse.df[with(allparse.df, order(Date)),]
 priority.train <- priority.df[1:(round(nrow(priority.df) / 2)),]
+
+from.weight <- ddply(priority.train, .(From.Email), summarise, Freq=length(Subject))
+from.weight <- transform(from.weight, Weight=log(Freq + 1))
+
+find.threads <- function(email.df) {
+  response.threads <- strsplit(email.df$Subject, "re: ")
+  is.thread <- sapply(response.threads, function(subj) ifelse(subj[1] == "", TRUE, FALSE))
+  threads <- response.threads[is.thread]
+  senders <- email.df$From.Email[is.thread]
+  threads <- sapply(threads, function(t) paste(t[2:length(t)], collapse="re: "))
+  return(cbind(senders, threads))
+}
+
+threads.matrix <- find.threads(priority.train)
+
+email.thread <- function(threads.matrix) {
+  senders <- threads.matrix[, 1]
+  senders.freq <- table(senders)
+  senders.matrix <- cbind(names(senders.freq), senders.freq, log(senders.freq + 1))
+  senders.df <- data.frame(senders.matrix, stringsAsFactors = FALSE)
+  row.names(senders.df) <- 1:nrow(senders.df)
+  names(senders.df) <- c("From.Email", "Freq", "Weight")
+  senders.df$Freq <- as.numeric(senders.df$Freq)
+  senders.df$Weight <- as.numeric(senders.df$Weight)
+  return(senders.df)
+}
+
+senders.df <- email.thread(threads.matrix)
+
+get.threads <- function(threads.matrix, email.df) {
+  threads <- unique(threads.matrix[, 2])
+  thread.counts <- lapply(threads, function(t) thread.counts(t, email.df))
+  thread.matrix <- do.call(rbind, thread.counts)
+  return(cbind(threads, thread.matrix))
+}
+
+thread.counts <- function(thread, email.df) {
+  thread.times <- email.df$Date[which(email.df$Subject == thread | email.df$Subject == paste("re:", thread))]
+  freq <- length(thread.times)
+  min.time <- min(thread.times)
+  max.time <- max(thread.times)
+  time.span <- as.numeric(difftime(max.time, min.time, units="secs"))
+  if(freq < 2) {
+    return(c(NA, NA, NA))
+  }
+  else {
+    trans.weight <- freq / time.span
+    log.trans.weight <- 10 + log(trans.weight, base=10)
+    return(c(freq, time.span, log.trans.weight))
+  }
+}
+
+thread.weights <- get.threads(threads.matrix, priority.train)
+thread.weights <- data.frame(thread.weights, stringsAsFactors = FALSE)
+names(thread.weights) <- c("Thread", "Freq", "Response", "Weight")
+thread.weights$Freq <- as.numeric(thread.weights$Freq)
+thread.weights$Response <- as.numeric(thread.weights$Response)
+thread.weights$Weight <- as.numeric(thread.weights$Weight)
+thread.weights <- subset(thread.weights, is.na(thread.weights$Freq) == FALSE)
+
+term.counts <- function(term.vec, control) {
+  vec.corpus <- Corpus(VectorSource(term.vec))
+  vec.tdm <- TermDocumentMatrix(vec.corpus, control = control)
+  return(rowSums(as.matrix(vec.tdm)))
+}
+
+thread.terms <- term.counts(thread.weights$Thread, control=list(stopwords = stopwords()))
+thread.terms <- names(thread.terms)
+
+term.weights <- sapply(thread.terms,
+                       function(t) mean(thread.weights$Weight[grepl(t, thread.weights$Thread, fixed = TRUE)]))
+term.weights <- data.frame(list(Term = names(term.weights),
+                                Weight = term.weights),
+                           stringsAsFactors = FALSE,
+                           row.names = 1:length(term.weights))
+
+msg.terms <- term.counts(priority.train$Message, control=list(stopwords = stopwords(), removePunctuation = TRUE, removeNumber = TRUE))
+msg.weights <- data.frame(list(Term=names(msg.terms), Weight = log(msg.terms, base = 10)), stringsAsFactors = FALSE, row.names=1:length(msg.terms))
+msg.weights <- subset(msg.weights, Weight > 0)
+
+get.weights <- function(search.term, weight.df, term=TRUE) {
+  if (length(search.term) > 0) {
+    if (term) {
+      term.match <- match(names(search.term), weight.df$Term)
+    }
+    else {
+      term.match <- match(search.term, weight.df$Thread)
+    }
+    match.weights <- weight.df$Weight[which(!is.na(term.match))]
+    if (length(match.weights) < 1) {
+      return(1)
+    }
+    else {
+      return(mean(match.weights))
+    }
+  }
+  else {
+    return(1)
+  }
+}
+
+rank.message <- function(path) {
+  msg <- parse.email(path)
+  
+  #waga nadawcy na podstawie częstotliwości występowania
+  from <- ifelse(length(which(from.weight$From.Email ==msg[2])) >0, from.weight$Weight[which(from.weight$From.Email == msg[2])], 1)
+  
+  #waga wątku
+  thread.from <- ifelse(length(which(senders.df$From.Email == msg[2])) >0, senders.df$Weight[which(senders.df$From.Email == msg[2])], 1)
+  
+  subj <- strsplit(tolower(msg[3]), "re: ")
+  is.thread <- ifelse(subj[[1]][1] == "", TRUE, FALSE)
+  if (is.thread) {
+    activity <- get.weights(subj[[1]][2], thread.weights, term=FALSE)
+  }
+  else {
+    activity <- 1
+  }
+  
+  #waga wiadomości na podstawie częstości występowania wyrazów w wątkach
+  thread.terms <- term.counts(msg[3], control=list(stopwords=stopwords()))
+  thread.terms.weights <- get.weights(thread.terms, term.weights)
+  
+  #waga wiadomości na podstawie częstości występowania wyrazów we wszystkich wiadomościach
+  msg.terms <- term.counts(msg[4], control=list(stopwords=stopwords(), removePunctuation = TRUE, removeNumbers = TRUE))
+  msg.weights <- get.weights(msg.terms, msg.weights)
+  
+  #złóż wagi i podaj priorytet wiadomości
+  rank <- prod(from, thread.from, activity, thread.terms.weights, msg.weights)
+  
+  return(c(msg[1], msg[2], msg[3], rank))
+}
+
+train.paths <- priority.df$Path[1:(round(nrow(priority.df) /2))]
+test.paths <- priority.df$Path[((round(nrow(priority.df) / 2)) +1):nrow(priority.df)]
+
+train.ranks <- lapply(train.paths, rank.message)
+train.ranks.matrix <- do.call(rbind, train.ranks)
+train.ranks.matrix <- cbind(train.paths, train.ranks.matrix, "TRENING")
+train.ranks.df <- data.frame(train.ranks.matrix, stringsAsFactors = FALSE)
+names(train.ranks.df) <- c("Message", "Date", "From", "Subj", "Rank", "Type")
+train.ranks.df$Rank <- as.numeric(train.ranks.df$Rank)
+
+priority.threshold <- median(train.ranks.df$Rank)
+
+train.ranks.df$Priority <- ifelse(train.ranks.df$Rank >= priority.threshold, 1, 0)
