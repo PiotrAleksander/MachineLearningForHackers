@@ -217,7 +217,44 @@ train.ranks.matrix <- cbind(train.paths, train.ranks.matrix, "TRENING")
 train.ranks.df <- data.frame(train.ranks.matrix, stringsAsFactors = FALSE)
 names(train.ranks.df) <- c("Message", "Date", "From", "Subj", "Rank", "Type")
 train.ranks.df$Rank <- as.numeric(train.ranks.df$Rank)
+train.ranks.df$Priority <- ifelse(train.ranks.df$Rank >= priority.threshold, 1, 0)
 
 priority.threshold <- median(train.ranks.df$Rank)
+threshold.train.plot <- ggplot(train.ranks.df, aes(x = Rank)) + 
+  stat_density(aes(fill="darkred")) + 
+  geom_vline(xintercept = priority.threshold, linetype = 2) + 
+  scale_fill_manual(values = c("darkred" = "darkred"), guide = "none") + 
+  theme_bw()
+print(threshold.train.plot)
 
-train.ranks.df$Priority <- ifelse(train.ranks.df$Rank >= priority.threshold, 1, 0)
+test.ranks <- suppressWarnings(lapply(test.paths, rank.message))
+test.ranks.matrix <- do.call(rbind, test.ranks)
+test.ranks.matrix <- cbind(test.paths, test.ranks.matrix, "TESTING")
+test.ranks.df <- data.frame(test.ranks.matrix, stringsAsFactors = FALSE)
+names(test.ranks.df) <- c("Message", "Date", "From", "Subj", "Rank", "Type")
+test.ranks.df$Rank <- as.numeric(test.ranks.df$Rank)
+test.ranks.df$Priority <- ifelse(test.ranks.df$Rank >= priority.threshold, 1, 0)
+
+threshold.test.plot <- ggplot(test.ranks.df, aes(x = Rank)) + 
+  stat_density(aes(fill="darkred")) + 
+  geom_vline(xintercept = priority.threshold, linetype = 2) + 
+  scale_fill_manual(values = c("darkred" = "darkred"), guide = "none") + 
+  theme_bw()
+print(threshold.test.plot)
+
+#łączenie zbiorów w jeden
+final.df <- rbind(train.ranks.df, test.ranks.df)
+final.df$Date <- date.converter(final.df$Date, pattern1, pattern2)
+final.df <- final.df[rev(with(final.df, order(Date))), ]
+
+#zapisz wyniki do .csv
+write.csv(final.df, file.path("final_df.csv"), row.names = FALSE)
+
+final.plot <- ggplot(subset(final.df, Type == "TRENING"), aes(x = Rank)) +
+  stat_density(aes(fill = Type, alpha = 0.65)) +
+  stat_density(data = subset(final.df, Type == "TESTING"), aes(fill = Type, alpha = 0.65)) +
+  geom_vline(xintercept = priority.threshold, linetype = 2) +
+  scale_alpha(guide = "none") +
+  scale_fill_manual(values = c("TRENING" = "darkred", "TESTING" = "darkblue")) +
+  theme_bw()
+print(final.plot)
