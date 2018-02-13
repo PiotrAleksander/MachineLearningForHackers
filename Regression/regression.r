@@ -30,3 +30,25 @@ ages <- transform(ages, NewPrediction = ifelse(Smokes == 0, non.smokers.guess, s
 divided.prediction <- with(ages, sqrt(mean((AgeAtDeath - NewPrediction) ^ 2)))
 #o tyle jest mniejszy błąd dla oddzielnie podawanych predykcji
 single.prediciton - divided.prediction
+
+heights.weights <- read.csv('data/01_heights_weights_genders.csv', header = TRUE, sep=',')
+heights.weights$Height <- heights.weights$Height * 2.54
+heights.weights$Weight <- heights.weights$Weight * 0.454
+ggplot(heights.weights, aes(x = Height, y = Weight)) +
+  geom_point() +
+  labs(x = "Wzrost", y = "Waga") + 
+  geom_smooth(method = "lm")
+
+fitted.regression <- lm(Weight ~ Height, data = heights.weights)
+coef(fitted.regression)
+intercept <- coef(fitted.regression)[1]
+slope <- coef(fitted.regression)[2]
+
+predict(fitted.regression)
+true.values <- with(heights.weights, Weight)
+errors <- true.values - predict(fitted.regression)
+
+#albo trzy linijki wyżej, albo błąd predykcji liczymy dzięki:
+residuals(fitted.regression)
+
+plot(fitted.regression, which = 1)
